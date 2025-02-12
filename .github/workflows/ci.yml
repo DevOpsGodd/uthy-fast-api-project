@@ -52,7 +52,7 @@ jobs:
           echo "$PRIVATE_KEY" > private_key.pem
           chmod 600 private_key.pem
           ssh -o StrictHostKeyChecking=no -i private_key.pem ubuntu@$HOST '
-            cd fastapi-book-project &&
+            cd uthy-fast-api-project &&
             git pull &&
             docker-compose down &&
             docker-compose up -d --build
