@@ -1,5 +1,4 @@
 name: FastAPI Book Project CI/CD
-
 on:
   pull_request:
     branches: [ main ]
@@ -51,10 +50,62 @@ jobs:
         run: |
           echo "$PRIVATE_KEY" > private_key.pem
           chmod 600 private_key.pem
+          
           ssh -o StrictHostKeyChecking=no -i private_key.pem ubuntu@$HOST '
             cd uthy-fast-api-project &&
+            
+            # Show current state
+            echo "Current main.py content:" &&
+            cat main.py &&
+            
+            # Pull and verify
             git pull &&
             sleep 5 &&
-            docker-compose down &&
-            docker-compose up -d --build
+            echo "Updated main.py content:" &&
+            cat main.py &&
+            
+            # Clean and rebuild
+            docker-compose down --remove-orphans &&
+            docker system prune -f &&
+            docker-compose build --no-cache &&
+            docker-compose up -d &&
+            
+            # Wait for services
+            echo "Waiting for services to start..." &&
+            sleep 20 &&
+            
+            # Verify containers
+            echo "Checking running containers:" &&
+            docker ps &&
+            
+            # Verify healthcheck
+            if ! curl -s -f http://localhost/healthcheck; then
+                echo "Healthcheck failed"
+                docker-compose logs
+                exit 1
+            fi &&
+            
+            # Verify stage2 endpoint
+            echo "Verifying stage2 endpoint..." &&
+            if ! curl -s -f http://localhost/stage2; then
+                echo "Stage2 endpoint verification failed"
+                echo "App logs:"
+                docker-compose logs app
+                echo "Nginx logs:"
+                docker-compose logs nginx
+            fi &&
+            
+            # Show final logs
+            echo "Final container logs:" &&
+            docker-compose logs --tail=20 &&
+            
+            echo "Deployment verification completed"
           '
+          
+      - name: Verify Deployment
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          sleep 30
+          curl -v http://$HOST/healthcheck
+          echo "Deployment verification completed"
