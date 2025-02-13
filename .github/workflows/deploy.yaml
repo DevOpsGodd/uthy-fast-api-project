@@ -1,5 +1,4 @@
 name: FastAPI Book Project CI/CD
-
 on:
   pull_request:
     branches: [ main ]
@@ -34,9 +33,6 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       
-      - name: Build Docker image
-        run: docker build -t fastapi-app .
-        
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
@@ -51,10 +47,79 @@ jobs:
         run: |
           echo "$PRIVATE_KEY" > private_key.pem
           chmod 600 private_key.pem
+          
           ssh -o StrictHostKeyChecking=no -i private_key.pem ubuntu@$HOST '
-            cd uthy-fast-api-project &&
-            git pull &&
-            sleep 5 &&
-            docker-compose down &&
-            docker-compose up -d --build
+            set -e
+            cd uthy-fast-api-project
+            
+            echo "=== Pre-deployment State ==="
+            echo "Git status:"
+            git status
+            
+            echo "=== Pulling Latest Code ==="
+            git fetch origin
+            git reset --hard origin/main
+            
+            echo "=== Verifying Code Update ==="
+            echo "main.py content:"
+            cat main.py
+            
+            echo "=== Stopping and Cleaning ==="
+            docker-compose down --remove-orphans
+            docker system prune -af --volumes
+            
+            echo "=== Rebuilding and Starting ==="
+            docker-compose build --no-cache
+            docker-compose up -d
+            
+            echo "=== Waiting for Services ==="
+            sleep 30
+            
+            echo "=== Verifying Deployment ==="
+            # Check if containers are running
+            if ! docker-compose ps | grep "Up"; then
+              echo "Containers failed to start"
+              docker-compose logs
+              exit 1
+            fi
+            
+            echo "=== Testing Endpoints ==="
+            # Test healthcheck
+            if ! curl -s -f http://localhost/healthcheck; then
+              echo "Healthcheck failed"
+              docker-compose logs
+              exit 1
+            fi
+            
+            # Test stage2 endpoint
+            echo "Testing stage2 endpoint..."
+            STAGE2_RESPONSE=$(curl -s -w "\n%{http_code}" http://localhost/stage2)
+            HTTP_CODE=$(echo "$STAGE2_RESPONSE" | tail -n1)
+            RESPONSE_BODY=$(echo "$STAGE2_RESPONSE" | head -n1)
+            
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "Stage2 endpoint failed with HTTP code: $HTTP_CODE"
+              echo "Response body: $RESPONSE_BODY"
+              echo "=== App Logs ==="
+              docker-compose logs app
+              echo "=== Nginx Logs ==="
+              docker-compose logs nginx
+              exit 1
+            fi
+            
+            echo "=== Final Container State ==="
+            docker-compose ps
+            
+            echo "=== Recent Logs ==="
+            docker-compose logs --tail=50
           '
+          
+      - name: Final Verification
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          sleep 10
+          echo "Testing healthcheck endpoint..."
+          curl -v http://$HOST/healthcheck
+          echo "Testing stage2 endpoint..."
+          curl -v http://$HOST/stage2
