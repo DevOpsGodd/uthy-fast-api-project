@@ -33,9 +33,6 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       
-      - name: Build Docker image
-        run: docker build -t fastapi-app .
-        
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
@@ -52,60 +49,77 @@ jobs:
           chmod 600 private_key.pem
           
           ssh -o StrictHostKeyChecking=no -i private_key.pem ubuntu@$HOST '
-            cd uthy-fast-api-project &&
+            set -e
+            cd uthy-fast-api-project
             
-            # Show current state
-            echo "Current main.py content:" &&
-            cat main.py &&
+            echo "=== Pre-deployment State ==="
+            echo "Git status:"
+            git status
             
-            # Pull and verify
-            git pull &&
-            sleep 5 &&
-            echo "Updated main.py content:" &&
-            cat main.py &&
+            echo "=== Pulling Latest Code ==="
+            git fetch origin
+            git reset --hard origin/main
             
-            # Clean and rebuild
-            docker-compose down --remove-orphans &&
-            docker system prune -f &&
-            docker-compose build --no-cache &&
-            docker-compose up -d &&
+            echo "=== Verifying Code Update ==="
+            echo "main.py content:"
+            cat main.py
             
-            # Wait for services
-            echo "Waiting for services to start..." &&
-            sleep 20 &&
+            echo "=== Stopping and Cleaning ==="
+            docker-compose down --remove-orphans
+            docker system prune -af --volumes
             
-            # Verify containers
-            echo "Checking running containers:" &&
-            docker ps &&
+            echo "=== Rebuilding and Starting ==="
+            docker-compose build --no-cache
+            docker-compose up -d
             
-            # Verify healthcheck
+            echo "=== Waiting for Services ==="
+            sleep 30
+            
+            echo "=== Verifying Deployment ==="
+            # Check if containers are running
+            if ! docker-compose ps | grep "Up"; then
+              echo "Containers failed to start"
+              docker-compose logs
+              exit 1
+            fi
+            
+            echo "=== Testing Endpoints ==="
+            # Test healthcheck
             if ! curl -s -f http://localhost/healthcheck; then
-                echo "Healthcheck failed"
-                docker-compose logs
-                exit 1
-            fi &&
+              echo "Healthcheck failed"
+              docker-compose logs
+              exit 1
+            fi
             
-            # Verify stage2 endpoint
-            echo "Verifying stage2 endpoint..." &&
-            if ! curl -s -f http://localhost/stage2; then
-                echo "Stage2 endpoint verification failed"
-                echo "App logs:"
-                docker-compose logs app
-                echo "Nginx logs:"
-                docker-compose logs nginx
-            fi &&
+            # Test stage2 endpoint
+            echo "Testing stage2 endpoint..."
+            STAGE2_RESPONSE=$(curl -s -w "\n%{http_code}" http://localhost/stage2)
+            HTTP_CODE=$(echo "$STAGE2_RESPONSE" | tail -n1)
+            RESPONSE_BODY=$(echo "$STAGE2_RESPONSE" | head -n1)
             
-            # Show final logs
-            echo "Final container logs:" &&
-            docker-compose logs --tail=20 &&
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "Stage2 endpoint failed with HTTP code: $HTTP_CODE"
+              echo "Response body: $RESPONSE_BODY"
+              echo "=== App Logs ==="
+              docker-compose logs app
+              echo "=== Nginx Logs ==="
+              docker-compose logs nginx
+              exit 1
+            fi
             
-            echo "Deployment verification completed"
+            echo "=== Final Container State ==="
+            docker-compose ps
+            
+            echo "=== Recent Logs ==="
+            docker-compose logs --tail=50
           '
           
-      - name: Verify Deployment
+      - name: Final Verification
         env:
           HOST: ${{ secrets.EC2_HOST }}
         run: |
-          sleep 30
+          sleep 10
+          echo "Testing healthcheck endpoint..."
           curl -v http://$HOST/healthcheck
-          echo "Deployment verification completed"
+          echo "Testing stage2 endpoint..."
+          curl -v http://$HOST/stage2
